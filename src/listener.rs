@@ -71,7 +71,7 @@ impl EventHandler for Listener {
         return;
       },
     };
-    if let Err(e) = state.process(&message, conn) {
+    if let Err(e) = state.process(&message, &conn) {
       eprintln!("error in processing: {:#?}", e);
     }
   }
@@ -99,7 +99,7 @@ impl State {
     })
   }
 
-  fn process(&mut self, message: &Message, conn: Connection) -> Result<()> {
+  fn process(&mut self, message: &Message, conn: &Connection) -> Result<()> {
     if !message.channel().map(|x| x.private().is_some()).unwrap_or_default() {
       return Ok(());
     }
@@ -113,7 +113,7 @@ impl State {
     }
     self.last_message = message.timestamp.with_timezone(&Utc);
     let stage = match self.stage {
-      Stage::Default => self.do_default(message, &conn),
+      Stage::Default => self.do_default(message, conn),
       Stage::ChoosingGuild(ref original_message, ref guilds) => self.do_choosing_guild(message, original_message, guilds),
     };
     if let Some(stage) = stage? {
@@ -155,7 +155,7 @@ impl State {
 
   fn do_default(&self, message: &Message, conn: &Connection) -> Result<Option<Stage>> {
     let guilds = self.guilds(conn, message.author.id)?;
-    if guilds.len() == 0 {
+    if guilds.is_empty() {
       return Ok(Some(Stage::Default));
     }
 
@@ -181,7 +181,7 @@ Please **send the name of the server as I've listed below** to let me know which
       names,
     );
     message.channel_id.send_message(|m| m.content(msg)).chain_err(|| "could not send message")?;
-    Ok(Some(Stage::ChoosingGuild(message.clone(), guilds)))
+    Ok(Some(Stage::ChoosingGuild(box message.clone(), box guilds)))
   }
 
   fn do_choosing_guild(&self, message: &Message, original: &Message, guilds: &BTreeMap<String, Config>) -> Result<Option<Stage>> {
@@ -320,7 +320,7 @@ enum Stage {
   Default,
   /// The user is choosing a guild to send the message to.
   /// The guilds with Mod Mail enabled that the user is in.
-  ChoosingGuild(Message, BTreeMap<String, Config>),
+  ChoosingGuild(Box<Message>, Box<BTreeMap<String, Config>>),
 }
 
 impl Default for Stage {
