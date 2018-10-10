@@ -204,7 +204,7 @@ Please **send the name of the server as I've listed below** to let me know which
 
   fn do_relay(&self, message: &Message, guild_name: &str, config: &Config) -> Result<()> {
       let msg = format!(
-        "In a few seconds, I will create a new channel in the **{}** Discord server and relay your message. I will also message you and notify the moderators.\n
+        "In a few seconds, I will create a new channel in the **{}** Discord server and relay your message. I will also mention you and the moderators.\n
 **Important**: Please continue the conversation in the new channel and not in this DM. Thanks!",
         guild_name,
       );
