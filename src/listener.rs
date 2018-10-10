@@ -172,7 +172,7 @@ impl State {
       .chain_err(|| "could not send message")?;
     let names = guilds.keys().map(|x| x.as_str()).collect::<Vec<_>>().join("\n");
     let msg = format!(
-      ":thinking: **Choose a server**\n\nYou're in {} servers, so I'm not sure which one you want to contact.
+      ":thinking: **Choose a server**\n\nYou're in {} servers with me, so I'm not sure which one you want to contact.
 
 Please **send the name of the server as I've listed below** to let me know which one you want to contact.
 
