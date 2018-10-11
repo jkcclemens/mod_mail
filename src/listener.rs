@@ -275,13 +275,13 @@ Please **send the name of the server as I've listed below** to let me know which
         })
         .chain_err(|| "could not update permissions on channel")?;
 
+      std::thread::sleep(Duration::seconds(3).to_std().unwrap());
+
       let mut fix_mentionable = false;
       if !mod_role.mentionable {
         fix_mentionable = true;
         mod_role.edit(|e| e.mentionable(true)).ok();
       }
-
-      std::thread::sleep(Duration::seconds(3).to_std().unwrap());
 
       let msg = format!(
         "From: {}\nTo: {}\n\nOriginal message below:",
