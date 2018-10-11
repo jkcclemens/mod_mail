@@ -243,6 +243,8 @@ Please **send the name of the server as I've listed below** to let me know which
         )
         .chain_err(|| "could not create channel")?;
 
+      let current_id = serenity::CACHE.read().user.id;
+
       // set permissions
       channel
         .create_permission(&PermissionOverwrite {
@@ -267,7 +269,7 @@ Please **send the name of the server as I've listed below** to let me know which
         .chain_err(|| "could not update permissions on channel")?;
       channel
         .create_permission(&PermissionOverwrite {
-          kind: PermissionOverwriteType::Member(serenity::CACHE.read().user.id),
+          kind: PermissionOverwriteType::Member(current_id),
           allow: Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES,
           deny: Permissions::empty(),
         })
@@ -307,7 +309,7 @@ Please **send the name of the server as I've listed below** to let me know which
       }
 
       channel
-        .delete_permission(PermissionOverwriteType::Member(serenity::CACHE.read().user.id))
+        .delete_permission(PermissionOverwriteType::Member(current_id))
         .chain_err(|| "could not update permissions on channel")?;
 
       Ok(())
