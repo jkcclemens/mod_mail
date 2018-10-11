@@ -13,10 +13,16 @@ use serenity::Client;
 mod database;
 mod error;
 mod listener;
+mod logging;
 
 use crate::listener::Listener;
 
 fn main() {
+  if let Err(e) = log::set_logger(&crate::logging::SimpleLogger)
+    .map(|()| log::set_max_level(log::LevelFilter::Trace)) {
+    eprintln!("could not set up logger: {}", e);
+  }
+
   dotenv::dotenv().ok();
 
   let token = match std::env::var("MM_DISCORD_TOKEN") {

@@ -15,6 +15,7 @@ postgres = "0.15"
 rand = "0.5"
 dotenv = "0.13"
 strsim = "0.8"
+log = "0.4"
 
 [dependencies.diesel]
 version = "1.3"
