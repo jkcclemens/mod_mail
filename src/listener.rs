@@ -115,6 +115,7 @@ impl State {
     let stage = match self.stage {
       Stage::Default => self.do_default(message, conn),
       Stage::ChoosingGuild(ref original_message, ref guilds) => self.do_choosing_guild(message, original_message, guilds),
+      Stage::Cooldown(finished) => self.do_cooldown(message, conn, finished),
     };
     if let Some(stage) = stage? {
       self.stage = stage;
@@ -153,6 +154,34 @@ impl State {
     Ok(guilds)
   }
 
+  fn do_cooldown(&self, message: &Message, conn: &Connection, finished: DateTime<Utc>) -> Result<Option<Stage>> {
+    let now = Utc::now();
+    if now < finished {
+      let dur = finished.signed_duration_since(now);
+      let mins = dur.num_minutes();
+      let secs = dur.num_seconds() - (mins * 60);
+      let mut time = String::new();
+      if mins > 0 {
+        time += &format!("{} minute{}", mins, if mins == 1 { "" } else { "s" });
+      }
+      if secs > 0 {
+        if !time.is_empty() {
+          time += " and ";
+        }
+        time += &format!("{} second{}", secs, if secs == 1 { "" } else { "s" });
+      }
+
+      let msg = format!(
+        "You must wait until {} to use Mod Mail again.",
+        time,
+      );
+      message.channel_id.send_message(|m| m.content(&msg)).chain_err(|| "could not send message")?;
+      return Ok(None);
+    }
+
+    self.do_default(message, conn)
+  }
+
   fn do_default(&self, message: &Message, conn: &Connection) -> Result<Option<Stage>> {
     let guilds = self.guilds(conn, message.author.id)?;
     if guilds.is_empty() {
@@ -162,7 +191,7 @@ impl State {
     if guilds.len() == 1 {
       let (name, config) = guilds.iter().next().unwrap();
       self.do_relay(message, &name, &config)?;
-      return Ok(Some(Stage::Default));
+      return Ok(Some(Stage::Cooldown(Utc::now() + Duration::minutes(10))));
     }
     message.channel_id.send_message(|m| m
       .content("Thanks for sending me a message. Messages sent to me will be relayed to a private channel between you and the Discord server's moderation team.
@@ -199,7 +228,7 @@ Please **send the name of the server as I've listed below** to let me know which
       },
     };
     self.do_relay(original, name, config)?;
-    Ok(Some(Stage::Default))
+    Ok(Some(Stage::Cooldown(Utc::now() + Duration::minutes(10))))
   }
 
   fn do_relay(&self, message: &Message, guild_name: &str, config: &Config) -> Result<()> {
@@ -323,6 +352,8 @@ enum Stage {
   /// The user is choosing a guild to send the message to.
   /// The guilds with Mod Mail enabled that the user is in.
   ChoosingGuild(Box<Message>, Box<BTreeMap<String, Config>>),
+  /// The user has recently used Mod Mail and must wait until the specified date to do so again.
+  Cooldown(DateTime<Utc>),
 }
 
 impl Default for Stage {
