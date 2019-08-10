@@ -23,9 +23,10 @@ use serenity::{
   prelude::*,
   model::{
     channel::{ChannelType, Message, PermissionOverwrite, PermissionOverwriteType},
-    gateway::{Game, Ready},
+    event::ResumedEvent,
+    gateway::{Activity, Ready},
     guild::Guild,
-    id::{GuildId, ChannelId, UserId},
+    id::{GuildId, UserId},
     permissions::Permissions,
     user::OnlineStatus,
   },
@@ -49,15 +50,25 @@ impl Listener {
   }
 }
 
-impl EventHandler for Listener {
-  fn ready(&self, ctx: Context, _: Ready) {
+impl Listener {
+  fn update_presence(&self, ctx: &Context) {
     ctx.set_presence(
-      Some(Game::playing("DM to contact the mods.")),
+      Some(Activity::playing("DM to contact the mods.")),
       OnlineStatus::Online,
     );
   }
+}
 
-  fn message(&self, _ctx: Context, message: Message) {
+impl EventHandler for Listener {
+  fn ready(&self, ctx: Context, _: Ready) {
+    self.update_presence(&ctx);
+  }
+
+  fn resume(&self, ctx: Context, _: ResumedEvent) {
+    self.update_presence(&ctx);
+  }
+
+  fn message(&self, ctx: Context, message: Message) {
     if !self.states.read().contains_key(&message.author.id) {
       self.states.write().insert(message.author.id, State::new(&message));
     }
@@ -71,7 +82,7 @@ impl EventHandler for Listener {
         return;
       },
     };
-    if let Err(e) = state.process(&message, &conn) {
+    if let Err(e) = state.process(&ctx, &message, &conn) {
       eprintln!("error in processing: {:#?}", e);
     }
   }
@@ -99,12 +110,12 @@ impl State {
     })
   }
 
-  fn process(&mut self, message: &Message, conn: &Connection) -> Result<()> {
-    if !message.channel().map(|x| x.private().is_some()).unwrap_or_default() {
+  fn process(&mut self, ctx: &Context, message: &Message, conn: &Connection) -> Result<()> {
+    if !message.channel(ctx).map(|x| x.private().is_some()).unwrap_or_default() {
       return Ok(());
     }
 
-    if message.author.id == serenity::CACHE.read().user.id {
+    if message.author.id == ctx.cache.read().user.id {
       return Ok(());
     }
 
@@ -113,9 +124,9 @@ impl State {
     }
     self.last_message = message.timestamp.with_timezone(&Utc);
     let stage = match self.stage {
-      Stage::Default => self.do_default(message, conn),
-      Stage::ChoosingGuild(ref original_message, ref guilds) => self.do_choosing_guild(message, original_message, guilds),
-      Stage::Cooldown(finished) => self.do_cooldown(message, conn, finished),
+      Stage::Default => self.do_default(ctx, message, conn),
+      Stage::ChoosingGuild(ref original_message, ref guilds) => self.do_choosing_guild(ctx, message, original_message, guilds),
+      Stage::Cooldown(finished) => self.do_cooldown(ctx, message, conn, finished),
     };
     if let Some(stage) = stage? {
       self.stage = stage;
@@ -123,8 +134,8 @@ impl State {
     Ok(())
   }
 
-  fn guilds(&self, conn: &Connection, user: UserId) -> Result<BTreeMap<String, Config>> {
-    let mut shared_guilds: BTreeMap<GuildId, String> = ::serenity::CACHE
+  fn guilds(&self, ctx: &Context, conn: &Connection, user: UserId) -> Result<BTreeMap<String, Config>> {
+    let mut shared_guilds: BTreeMap<GuildId, String> = ctx.cache
       .read()
       .guilds
       .values()
@@ -154,7 +165,7 @@ impl State {
     Ok(guilds)
   }
 
-  fn do_cooldown(&self, message: &Message, conn: &Connection, finished: DateTime<Utc>) -> Result<Option<Stage>> {
+  fn do_cooldown(&self, ctx: &Context, message: &Message, conn: &Connection, finished: DateTime<Utc>) -> Result<Option<Stage>> {
     let now = Utc::now();
     if now < finished {
       let dur = finished.signed_duration_since(now);
@@ -175,25 +186,25 @@ impl State {
         "You must wait until {} to use Mod Mail again.",
         time,
       );
-      message.channel_id.send_message(|m| m.content(&msg)).chain_err(|| "could not send message")?;
+      message.channel_id.send_message(ctx, |m| m.content(&msg)).chain_err(|| "could not send message")?;
       return Ok(None);
     }
 
-    self.do_default(message, conn)
+    self.do_default(ctx, message, conn)
   }
 
-  fn do_default(&self, message: &Message, conn: &Connection) -> Result<Option<Stage>> {
-    let guilds = self.guilds(conn, message.author.id)?;
+  fn do_default(&self, ctx: &Context, message: &Message, conn: &Connection) -> Result<Option<Stage>> {
+    let guilds = self.guilds(ctx, conn, message.author.id)?;
     if guilds.is_empty() {
       return Ok(Some(Stage::Default));
     }
 
     if guilds.len() == 1 {
       let (name, config) = guilds.iter().next().unwrap();
-      self.do_relay(message, &name, &config)?;
+      self.do_relay(ctx, message, &name, &config)?;
       return Ok(Some(Stage::Cooldown(Utc::now() + Duration::minutes(10))));
     }
-    message.channel_id.send_message(|m| m
+    message.channel_id.send_message(ctx, |m| m
       .content("Thanks for sending me a message. Messages sent to me will be relayed to a private channel between you and the Discord server's moderation team.
 
 **Note**: I'll forget all about you contacting me if you become inactive for more than 30 minutes.")
@@ -209,11 +220,11 @@ Please **send the name of the server as I've listed below** to let me know which
       guilds.len(),
       names,
     );
-    message.channel_id.send_message(|m| m.content(msg)).chain_err(|| "could not send message")?;
+    message.channel_id.send_message(ctx, |m| m.content(msg)).chain_err(|| "could not send message")?;
     Ok(Some(Stage::ChoosingGuild(box message.clone(), box guilds)))
   }
 
-  fn do_choosing_guild(&self, message: &Message, original: &Message, guilds: &BTreeMap<String, Config>) -> Result<Option<Stage>> {
+  fn do_choosing_guild(&self, ctx: &Context, message: &Message, original: &Message, guilds: &BTreeMap<String, Config>) -> Result<Option<Stage>> {
     let choice = guilds
       .iter()
       .map(|(name, config,)| (name, config, strsim::normalized_damerau_levenshtein(&message.content.to_lowercase(), &name.to_lowercase())))
@@ -222,22 +233,22 @@ Please **send the name of the server as I've listed below** to let me know which
       Some((name, config, score)) if score > 0.75 => (name, config),
       _ => {
         message.channel_id
-          .send_message(|m| m.content("I couldn't tell what you meant. Please send the name of the Discord server exactly as I've listed."))
+          .send_message(ctx, |m| m.content("I couldn't tell what you meant. Please send the name of the Discord server exactly as I've listed."))
           .chain_err(|| "could not send message")?;
         return Ok(None);
       },
     };
-    self.do_relay(original, name, config)?;
+    self.do_relay(ctx, original, name, config)?;
     Ok(Some(Stage::Cooldown(Utc::now() + Duration::minutes(10))))
   }
 
-  fn do_relay(&self, message: &Message, guild_name: &str, config: &Config) -> Result<()> {
+  fn do_relay(&self, ctx: &Context, message: &Message, guild_name: &str, config: &Config) -> Result<()> {
       let msg = format!(
         "In a few seconds, I will create a new channel in the **{}** Discord server and relay your message. I will also mention you and the moderators.\n
 **Important**: Please continue the conversation in the new channel and not in this DM. Thanks!",
         guild_name,
       );
-      message.channel_id.send_message(|m| m.content(msg)).chain_err(|| "could not send message")?;
+      message.channel_id.send_message(ctx, |m| m.content(msg)).chain_err(|| "could not send message")?;
 
       let random: String = std::iter::repeat(())
         .map(|()| thread_rng().sample(Alphanumeric))
@@ -246,7 +257,7 @@ Please **send the name of the server as I've listed below** to let me know which
 
       let guild_id = GuildId(config.server_id as u64);
 
-      let guild = guild_id.to_guild_cached().chain_err(|| "missing cached guild")?;
+      let guild = guild_id.to_guild_cached(ctx).chain_err(|| "missing cached guild")?;
 
       let everyone = guild
         .read()
@@ -264,52 +275,55 @@ Please **send the name of the server as I've listed below** to let me know which
         .map(|(id, role)| (*id, role.clone()))
         .chain_err(|| "cannot find moderator role")?;
 
+      let current_id = ctx.cache.read().user.id;
+
       let channel = guild_id
         .create_channel(
-          &format!("mod_mail_{}", random),
-          ChannelType::Text,
-          config.category.map(|x| ChannelId(x as u64)),
+          ctx,
+          |c| {
+            c
+              .name(format!("mod_mail_{}", random))
+              .kind(ChannelType::Text)
+              .permissions(vec![
+                // don't let anyone read the channel by default
+                PermissionOverwrite {
+                  kind: PermissionOverwriteType::Role(everyone),
+                  allow: Permissions::empty(),
+                  deny: Permissions::READ_MESSAGES,
+                },
+                // let mods use the channel
+                PermissionOverwrite {
+                  kind: PermissionOverwriteType::Role(mod_role_id),
+                  allow: Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES,
+                  deny: Permissions::empty(),
+                },
+                // let the reporter use the channel
+                PermissionOverwrite {
+                  kind: PermissionOverwriteType::Member(message.author.id),
+                  allow: Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES,
+                  deny: Permissions::empty(),
+                },
+                // let the bot use the channel
+                PermissionOverwrite {
+                  kind: PermissionOverwriteType::Member(current_id),
+                  allow: Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES,
+                  deny: Permissions::empty(),
+                },
+              ]);
+            if let Some(category) = config.category {
+              c.category(category as u64);
+            }
+            c
+          },
         )
         .chain_err(|| "could not create channel")?;
-
-      let current_id = serenity::CACHE.read().user.id;
-
-      // set permissions
-      channel
-        .create_permission(&PermissionOverwrite {
-          kind: PermissionOverwriteType::Role(everyone),
-          allow: Permissions::empty(),
-          deny: Permissions::READ_MESSAGES,
-        })
-        .chain_err(|| "could not update permissions on channel")?;
-      channel
-        .create_permission(&PermissionOverwrite {
-          kind: PermissionOverwriteType::Role(mod_role_id),
-          allow: Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES,
-          deny: Permissions::empty(),
-        })
-        .chain_err(|| "could not update permissions on channel")?;
-      channel
-        .create_permission(&PermissionOverwrite {
-          kind: PermissionOverwriteType::Member(message.author.id),
-          allow: Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES,
-          deny: Permissions::empty(),
-        })
-        .chain_err(|| "could not update permissions on channel")?;
-      channel
-        .create_permission(&PermissionOverwrite {
-          kind: PermissionOverwriteType::Member(current_id),
-          allow: Permissions::READ_MESSAGES | Permissions::SEND_MESSAGES | Permissions::ATTACH_FILES,
-          deny: Permissions::empty(),
-        })
-        .chain_err(|| "could not update permissions on channel")?;
 
       std::thread::sleep(Duration::seconds(3).to_std().unwrap());
 
       let mut fix_mentionable = false;
       if !mod_role.mentionable {
         fix_mentionable = true;
-        mod_role.edit(|e| e.mentionable(true)).ok();
+        mod_role.edit(ctx, |e| e.mentionable(true)).ok();
       }
 
       let msg = format!(
@@ -317,12 +331,12 @@ Please **send the name of the server as I've listed below** to let me know which
         message.author.mention(),
         mod_role_id.mention(),
       );
-      channel.send_message(|m| m.content(&msg)).chain_err(|| "could not send message")?;
+      channel.send_message(ctx, |m| m.content(&msg)).chain_err(|| "could not send message")?;
       if fix_mentionable {
-        mod_role.edit(|e| e.mentionable(false)).ok();
+        mod_role.edit(ctx, |e| e.mentionable(false)).ok();
       }
       if message.attachments.is_empty() {
-        channel.send_message(|m| m.content(&message.content)).chain_err(|| "could not send message")?;
+        channel.send_message(ctx, |m| m.content(&message.content)).chain_err(|| "could not send message")?;
       } else {
         // FIXME: maybe don't download and instead just use the proxy_url
         let attachments: Vec<(Vec<u8>, &str)> = message
@@ -334,11 +348,11 @@ Please **send the name of the server as I've listed below** to let me know which
           .iter()
           .map(|(bs, n)| AttachmentType::Bytes((bs.as_slice(), *n)))
           .collect();
-        channel.send_files(files, |m| m.content(&message.content)).chain_err(|| "could not send message")?;
+        channel.send_files(ctx, files, |m| m.content(&message.content)).chain_err(|| "could not send message")?;
       }
 
       channel
-        .delete_permission(PermissionOverwriteType::Member(current_id))
+        .delete_permission(ctx, PermissionOverwriteType::Member(current_id))
         .chain_err(|| "could not update permissions on channel")?;
 
       Ok(())
